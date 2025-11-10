@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <title>اختبار التحديث اللحظي</title>
+</head>
+<body>
+  <h2>اختبار التحديث اللحظي</h2>
+  <div id="output">⏳ جاري تحميل البيانات...</div>
+
+  <script>
+    const output = document.getElementById("output");
+
+    // 🟢 الخطوة الأولى: جلب العدد المبدئي من API العادية
+    fetch("http://127.0.0.1:8000/booking/waiting-count/")
+      .then(response => response.json())
+      .then(data => {
+        output.textContent = "📊 عدد الحجوزات الحالي: " + data.waiting_count;
+      })
+      .catch(() => {
+        output.textContent = "⚠️ فشل الاتصال بالـ API";
+      });
+
+    // 🟢 الخطوة الثانية: إنشاء اتصال WebSocket للتحديث اللحظي
+    const socket = new WebSocket("ws://127.0.0.1:8000/ws/booking/");
+
+    socket.onopen = () => {
+      console.log("✅ تم الاتصال بـ WebSocket");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      output.textContent = "📊 عدد الحجوزات الحالي: " + data.waiting_count;
+    };
+
+    socket.onclose = () => {
+      console.log("❌ تم قطع الاتصال بـ WebSocket");
+    };
+  </script>
+</body>
+</html>
