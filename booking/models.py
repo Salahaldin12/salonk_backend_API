@@ -1,46 +1,86 @@
 from django.db import models
-from django.utils import timezone
+from barber_accounts.models import BarberProfile
+from customers_accounts.models import CustomerProfile
+from branches.models import Branch
 
-# Create your models here.
-
-class TimeSlot(models.Model):
-    date = models.DateField()
-    time = models.TimeField()
-    copacity = models.PositiveBigIntegerField(default=3) #عدد الأشخاص المسموح لهم في نفس الوقت
-
-
-    class Meta:
-        unique_together = ('date', 'time')  # منع التكرار لنفس الوقت 
-        ordering = ['date','time']
-
-    def __str__(self):
-        return f"{self.date} - {self.time} (Capacity: {self.copacity})"
-    
-
-    def available_slots(self):
-        """تحسب عدد الأماكن المتاحة بناءً على عدد الحجوزات الحالية"""
-        current_booking = self.bookings.filter(status='pending').count()
-        return max(self.copacity - current_booking, 0)
 
 class Booking(models.Model):
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('completed', 'Completed'),
-        ('canceled', 'Canceled'),
+
+    BOOKING_TYPE = [
+        ("shop", "Shop"),
+        ("home", "Home Service"),
     ]
-    name = models.CharField(max_length=100)
-    email = models.EmailField()
-    timeslot = models.ForeignKey(TimeSlot, on_delete=models.CASCADE, related_name='bookings', null=True, blank=True)
-    #date = models.DateField() #اليوم 
-    #time = models.TimeField() #الوقت
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
-    created_at = models.DateTimeField(auto_now_add=True)
+
+    STATUS = [
+        ("pending", "Pending"),
+        ("confirmed", "Confirmed"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    # المستخدم الذي قام بالحجز
+    user = models.ForeignKey(
+        CustomerProfile,
+        on_delete=models.CASCADE,
+        related_name="bookings"
+    )
+
+    # الحلاق
+    barber = models.ForeignKey(
+        BarberProfile,
+        on_delete=models.CASCADE,
+        related_name="bookings",
+        null=True,
+        blank=True
+    )
+
+    # الفرع
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.CASCADE,
+        related_name="bookings"
+    )
+
+    # نوع الحجز
+    booking_type = models.CharField(
+        max_length=10,
+        choices=BOOKING_TYPE,
+        default="shop"
+    )
+
+    # تاريخ الحجز
+    date = models.DateField()
+
+    # وقت الحجز
+    time = models.TimeField()
+
+    # يستخدم فقط للحجز المنزلي
+    location_url = models.URLField(
+        null=True,
+        blank=True
+    )
+
+    # ملاحظات
+    notes = models.TextField(
+        null=True,
+        blank=True
+    )
+
+    # حالة الحجز
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS,
+        default="pending"
+    )
+
+    # تاريخ إنشاء الحجز
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
 
     class Meta:
-        #unique_together = ('date', 'time')  # منع التكرار لنفس الوقت مع المستخدم 
-        ordering = ['timeslot__date', 'timeslot__time']
-
-
+        ordering = ["date", "time"]
+        unique_together = ["barber", "date", "time"]
 
     def __str__(self):
-        return f"{self.name} - {self.timeslot.date} at {self.timeslot.time}"
+        return f"{self.user} - {self.barber} - {self.date} {self.time}"

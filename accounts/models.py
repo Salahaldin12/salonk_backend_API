@@ -15,17 +15,19 @@ class UserManager(BaseUserManager):
         user = self.create_user(email, name, phone, password)
         user.is_staff = True
         user.is_superuser = True
+        user.is_active = True
+        user.is_verified = True
         user.save(using=self._db)
         return user
-
 
 class User(AbstractBaseUser, PermissionsMixin):
     name = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=20, unique=True)
-    verification_code = models.CharField(max_length=6, blank=True, null=True)  # كود التحقق
-    is_verified = models.BooleanField(default=False)  # حالة التفعيل
-    is_active = models.BooleanField(default=True)
+    profile_image = models.ImageField(upload_to='profile_images/', null=True, blank=True)  # الصورة
+    verification_code = models.CharField(max_length=6, blank=True, null=True)
+    is_verified = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)
     reset_code = models.CharField(max_length=6, blank=True, null=True)
 

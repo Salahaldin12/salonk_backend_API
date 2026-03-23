@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/ahlakly_API.iml" filepath="$PROJECT_DIR$/.idea/ahlakly_API.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/salonk_backend_API.iml" filepath="$PROJECT_DIR$/.idea/salonk_backend_API.iml" />
     </modules>
   </component>
 </project>
