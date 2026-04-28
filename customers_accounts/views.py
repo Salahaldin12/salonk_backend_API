@@ -4,10 +4,10 @@ from rest_framework import status
 from django.core.mail import send_mail
 from django.conf import settings
 
-from accounts.models import User
-from rest_framework.authtoken.models import Token
-from rest_framework.authentication import TokenAuthentication
+from accounts.models import User, UserSession
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from customers_accounts.models import CustomerProfile
 
@@ -20,6 +20,16 @@ from .serializers import (
 from accounts.utils import generate_verification_code, generate_reset_code
 
 
+# =========================
+# Helper: Get Client IP
+# =========================
+def get_client_ip(request):
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        return x_forwarded_for.split(',')[0]
+    return request.META.get('REMOTE_ADDR')
+
+
 # ===== Register =====
 class CustomerRegisterView(APIView):
     def post(self, request):
@@ -28,12 +38,13 @@ class CustomerRegisterView(APIView):
 
         user = serializer.save()
 
-        # تعطيل الحساب حتى يتم التفعيل
         user.is_active = False
         user.save()
 
-        # إنشاء CustomerProfile إذا لم يكن موجودًا
-        CustomerProfile.objects.get_or_create(user=user, defaults={'is_customer': True})
+        CustomerProfile.objects.get_or_create(
+            user=user,
+            defaults={'is_customer': True}
+        )
 
         code = generate_verification_code()
         user.verification_code = code
@@ -48,6 +59,7 @@ class CustomerRegisterView(APIView):
 
         return Response({"status": "success"}, status=status.HTTP_201_CREATED)
 
+
 # ===== Verify =====
 class CustomerVerifyView(APIView):
     def post(self, request):
@@ -58,7 +70,6 @@ class CustomerVerifyView(APIView):
             user = User.objects.get(
                 email=email,
                 verification_code=code,
-                #customer=True
             )
         except User.DoesNotExist:
             return Response(
@@ -69,21 +80,56 @@ class CustomerVerifyView(APIView):
         user.is_active = True
         user.verification_code = None
         user.save()
+
         return Response({"status": "success"})
 
 
-# ===== Login =====
+# ===== Login (🔥 تم التعديل) =====
 class CustomerLoginView(APIView):
     def post(self, request):
         serializer = CustomerLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         user = serializer.validated_data
-        token, _ = Token.objects.get_or_create(user=user)
+
+        if not user.is_active:
+            return Response(
+                {"message": "الحساب غير مفعل"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # 🔥 Generate JWT
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+        refresh_token = str(refresh)
+
+        # 🌍 IP
+        ip = get_client_ip(request)
+
+        # 📱 Device info
+        device_name = request.data.get("device_name", "Unknown")
+        platform = request.data.get("platform", "Unknown")
+
+        # 🔐 تحديث بيانات المستخدم
+        user.last_login_ip = ip
+        user.last_login_device = device_name
+        user.save()
+
+        # 🔥 إنشاء Session
+        UserSession.objects.create(
+            user=user,
+            refresh_token=refresh_token,
+            device_name=device_name,
+            platform=platform,
+            ip_address=ip,
+            country="Egypt",  # مؤقت
+            city="Cairo"
+        )
 
         return Response({
             "status": "success",
-            "token": token.key,
+            "access": access_token,
+            "refresh": refresh_token,
             "data": {
                 "id": user.id,
                 "name": user.name,
@@ -91,7 +137,6 @@ class CustomerLoginView(APIView):
                 "phone": user.phone,
             }
         })
-
 
 
 # ===================== Request Password Reset =====================
@@ -126,9 +171,11 @@ class RequestPasswordResetView(APIView):
         )
 
         return Response(
-            {"status": "success", "message": "تم إرسال الكود إلى بريدك الإلكتروني"},
+            {"status": "success", "message": "تم إرسال الكود"},
             status=status.HTTP_200_OK
         )
+
+
 # ===================== Verify Reset Code =====================
 class VerifyResetCodeView(APIView):
     def post(self, request):
@@ -139,14 +186,12 @@ class VerifyResetCodeView(APIView):
             user = User.objects.get(email=email, reset_code=reset_code)
         except User.DoesNotExist:
             return Response(
-                {"status": "failure", "message": "كود التحقق غير صحيح"},
+                {"status": "failure", "message": "كود غير صحيح"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        return Response(
-            {"status": "success"},
-            status=status.HTTP_200_OK
-        )
+        return Response({"status": "success"})
+
 
 # ===================== Reset Password =====================
 class ResetPasswordView(APIView):
@@ -157,7 +202,7 @@ class ResetPasswordView(APIView):
 
         if not email or not new_password or not reset_code:
             return Response(
-                {"status": "failure", "message": "يجب إدخال البريد والكود وكلمة المرور الجديدة"},
+                {"status": "failure", "message": "بيانات ناقصة"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -165,7 +210,7 @@ class ResetPasswordView(APIView):
             user = User.objects.get(email=email, reset_code=reset_code)
         except User.DoesNotExist:
             return Response(
-                {"status": "failure", "message": "الكود أو البريد غير صحيح"},
+                {"status": "failure", "message": "بيانات غير صحيحة"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -173,15 +218,12 @@ class ResetPasswordView(APIView):
         user.reset_code = None
         user.save()
 
-        return Response(
-            {"status": "success"},
-            status=status.HTTP_200_OK
-        )
+        return Response({"status": "success"})
 
 
 # ===== Profile =====
 class CustomerProfileView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -197,3 +239,21 @@ class CustomerProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({"status": "updated"})
+
+
+# ===== Logout (🔥 جديد) =====
+class CustomerLogoutView(APIView):
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+
+        if not refresh_token:
+            return Response(
+                {"message": "Refresh token مطلوب"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        UserSession.objects.filter(
+            refresh_token=refresh_token
+        ).update(is_active=False)
+
+        return Response({"status": "logged out"})

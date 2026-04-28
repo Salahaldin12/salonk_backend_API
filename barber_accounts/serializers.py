@@ -5,16 +5,27 @@ from barber_accounts.models import WorkingTime
 from branches.models import Branch
 
 # ===== Login Serializer =====
+
+
 class BarberLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        user = authenticate(email=data['email'], password=data['password'])
+        user = authenticate(
+            email=data['email'],
+            password=data['password']
+        )
 
+        # ❌ بيانات غير صحيحة
         if not user:
             raise serializers.ValidationError("بيانات الدخول غير صحيحة")
 
+        # ❌ ليس حساب حلاق
+        if not hasattr(user, "barber"):
+            raise serializers.ValidationError("هذا الحساب ليس حساب حلاق")
+
+        # ❌ الحساب غير مفعل
         if not user.is_active:
             raise serializers.ValidationError("الحساب غير مفعل")
 

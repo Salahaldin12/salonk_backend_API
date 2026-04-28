@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from accounts.models import User
+from accounts.models import User, UserSession
 from customers_accounts.models import CustomerProfile
 
 
@@ -47,6 +47,7 @@ class CustomerLoginSerializer(serializers.Serializer):
 
 
 class CustomerProfileSerializer(serializers.ModelSerializer):
+    sessions = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -54,5 +55,24 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             'name',
             'email',
             'phone',
-            'profile_image'
+            'profile_image',
+            'sessions'
+        ]
+
+    def get_sessions(self, obj):
+        sessions = UserSession.objects.filter(user=obj)
+        return UserSessionSerializer(sessions, many=True).data
+
+
+        
+class UserSessionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserSession
+        fields = [
+            "device_name",
+            "platform",
+            "ip_address",
+            "country",
+            "city",
+            "created_at"
         ]
