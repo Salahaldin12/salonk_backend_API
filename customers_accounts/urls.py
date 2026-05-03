@@ -4,6 +4,7 @@ from .views import (
     CustomerVerifyView,
     CustomerLoginView,
     CustomerProfileView,
+    ManageSessionsView,
     RequestPasswordResetView,
     ResetPasswordView,
     VerifyResetCodeView,
@@ -20,5 +21,9 @@ urlpatterns = [
     path("password-reset/confirm/", ResetPasswordView.as_view()),
     path('profile/', CustomerProfileView.as_view()),
     path('token_refresh/', TokenRefreshView.as_view(),),
+    path('sessions/', ManageSessionsView.as_view(),),
+
 
 ]
+
+# ManageSessionsView

@@ -1,9 +1,10 @@
+import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.mail import send_mail
 from django.conf import settings
-
+from django.shortcuts import get_object_or_404
 from accounts.models import User, UserSession
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -19,6 +20,44 @@ from .serializers import (
 
 from accounts.utils import generate_verification_code, generate_reset_code
 
+
+def get_location_from_coords(lat, lng):
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lng}&format=json"
+
+        response = requests.get(url, headers={
+            "User-Agent": "salonk_app"
+        })
+
+        if response.status_code == 200:
+            data = response.json()
+            address = data.get("address", {})
+
+            country = address.get("country", "")
+            city = address.get("city") or address.get("state") or address.get("town") or ""
+
+            return country, city
+
+    except Exception:
+        pass
+
+    return None, None
+
+import requests
+
+def get_location_from_ip(ip):
+    try:
+        url = f"https://ipapi.co/{ip}/json/"
+        response = requests.get(url, timeout=5)
+
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("country_name"), data.get("city")
+
+    except Exception as e:
+        print("❌ IP Location Error:", e)
+
+    return None, None
 
 # =========================
 # Helper: Get Client IP
@@ -104,14 +143,18 @@ class CustomerLoginView(APIView):
         refresh_token = str(refresh)
 
         # 🌍 IP
-        ip = get_client_ip(request)
+        lat = request.data.get("lat")
+        lng = request.data.get("lng")
+
+        # 🌍 Location from IP
+        country, city = get_location_from_coords(lat,lng)
 
         # 📱 Device info
         device_name = request.data.get("device_name", "Unknown")
         platform = request.data.get("platform", "Unknown")
 
         # 🔐 تحديث بيانات المستخدم
-        user.last_login_ip = ip
+        #user.last_login_ip = ip
         user.last_login_device = device_name
         user.save()
 
@@ -121,9 +164,8 @@ class CustomerLoginView(APIView):
             refresh_token=refresh_token,
             device_name=device_name,
             platform=platform,
-            ip_address=ip,
-            country="Egypt",  # مؤقت
-            city="Cairo"
+            country=country or "Unknown",
+            city=city or "Unknown"
         )
 
         return Response({
@@ -137,8 +179,6 @@ class CustomerLoginView(APIView):
                 "phone": user.phone,
             }
         })
-
-
 # ===================== Request Password Reset =====================
 class RequestPasswordResetView(APIView):
     def post(self, request):
@@ -257,3 +297,102 @@ class CustomerLogoutView(APIView):
         ).update(is_active=False)
 
         return Response({"status": "logged out"})
+    
+
+# =================================
+# =================================
+class ManageSessionsView(APIView):
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    # =========================
+    # 📥 GET → عرض الجلسات
+    # =========================
+    def get(self, request):
+
+        user = request.user
+        current_refresh = request.headers.get("Refresh-Token")
+
+        sessions = UserSession.objects.filter(user=user).order_by("-created_at")
+
+        data = []
+
+        for s in sessions:
+            data.append({
+                "id": s.id,
+                "device_name": s.device_name,
+                "platform": s.platform,
+                "ip_address": s.ip_address,
+                "country": s.country,
+                "city": s.city,
+                "is_active": s.is_active,
+                "is_current": str(s.refresh_token) == str(current_refresh),
+                "created_at": s.created_at.strftime("%Y-%m-%d %H:%M"),
+            })
+
+        return Response({
+            "status": "success",
+            "sessions": data
+        })
+
+    # =========================
+    # 🚪 POST → Logout
+    # =========================
+    def post(self, request):
+
+        action = request.data.get("action")
+
+        # =========================
+        # 🔥 Logout All
+        # =========================
+        if action == "logout_all":
+
+            sessions = UserSession.objects.filter(user=request.user)
+
+            for session in sessions:
+                try:
+                    RefreshToken(session.refresh_token).blacklist()
+                except:
+                    pass
+
+            sessions.update(is_active=False)
+
+            return Response({
+                "status": "success",
+                "message": "Logged out from all devices"
+            })
+
+        # =========================
+        # 📱 Logout Single
+        # =========================
+        elif action == "logout_one":
+
+            session_id = request.data.get("session_id")
+
+            session = get_object_or_404(
+                UserSession,
+                id=session_id,
+                user=request.user
+            )
+
+            try:
+                RefreshToken(session.refresh_token).blacklist()
+            except:
+                pass
+
+            session.is_active = False
+            session.save()
+
+            return Response({
+                "status": "success",
+                "message": "Logged out from this device"
+            })
+
+        # =========================
+        # ❌ Invalid Action
+        # =========================
+        return Response({
+            "status": "error",
+            "message": "Invalid action"
+        }, status=400)

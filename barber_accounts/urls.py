@@ -3,12 +3,12 @@ from django.urls import path
 from barber_accounts.views import (
     BarberLoginView,
     BarberChangePasswordView,
+    BarberPortfolioPublicView,
     ChakmailView,
     ManageSessionsView,
     VerifyResetCodeView,
     ProfileView,
     
-    BarberPortfolioView
 )
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -37,7 +37,7 @@ urlpatterns = [
     # 📸 Portfolio
     # =========================
     #path('portfolio/', BarberPortfolioUploadView.as_view()),
-    path('portfolio/<int:barber_id>/', BarberPortfolioView.as_view()),
+    path('portfolio/<int:barber_id>/', BarberPortfolioPublicView.as_view()),
 
 
     path('token_refresh/', TokenRefreshView.as_view(),),

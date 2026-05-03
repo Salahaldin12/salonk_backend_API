@@ -4,9 +4,10 @@ from accounts.models import User
 from barber_accounts.models import WorkingTime
 from branches.models import Branch
 
-# ===== Login Serializer =====
 
-
+# =========================
+# 🔐 Login Serializer
+# =========================
 class BarberLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
@@ -17,42 +18,33 @@ class BarberLoginSerializer(serializers.Serializer):
             password=data['password']
         )
 
-        # ❌ بيانات غير صحيحة
         if not user:
             raise serializers.ValidationError("بيانات الدخول غير صحيحة")
 
-        # ❌ ليس حساب حلاق
         if not hasattr(user, "barber"):
             raise serializers.ValidationError("هذا الحساب ليس حساب حلاق")
 
-        # ❌ الحساب غير مفعل
         if not user.is_active:
             raise serializers.ValidationError("الحساب غير مفعل")
 
         return user
 
 
-# ===== WorkingTime Serializer =====
-class WorkingTimeSerializer(serializers.ModelSerializer):
+# =========================
+# 🕒 Working Time Serializer
+# =========================
+class WorkingTimeSerializer(serializers.Serializer):
 
-    branch_id = serializers.IntegerField()
-    date = serializers.DateField()
-    start_time = serializers.TimeField()
-    end_time = serializers.TimeField()
-    clients_per_hour = serializers.IntegerField(default=3)
-
-    class Meta:
-        model = WorkingTime
-        fields = [
-            'branch_id',
-            'date',
-            'start_time',
-            'end_time',
-            'clients_per_hour'
-        ]
+    branch_id = serializers.IntegerField(required=True)
+    date = serializers.DateField(required=True)
+    start_time = serializers.TimeField(required=True)
+    end_time = serializers.TimeField(required=True)
+    clients_per_hour = serializers.IntegerField(required=False, default=3)
 
 
-# ===== Profile Serializer =====
+# =========================
+# 👤 Profile Serializer
+# =========================
 class EditProfileSerializer(serializers.ModelSerializer):
 
     profile_image = serializers.ImageField(required=False, allow_null=True)
@@ -67,7 +59,7 @@ class EditProfileSerializer(serializers.ModelSerializer):
             'profile_image',
             'working_times'
         ]
-        #print("gggggggggggggggggggggggggggg")
+
         extra_kwargs = {
             'email': {'required': False},
             'phone': {'required': False},
@@ -75,32 +67,50 @@ class EditProfileSerializer(serializers.ModelSerializer):
         }
 
     def update(self, instance, validated_data):
+
+        # =========================
+        # 🔹 Extract working times
+        # =========================
         working_times_data = validated_data.pop("working_times", None)
 
-        # تحديث بيانات المستخدم
+        # =========================
+        # 🔹 Update basic info
+        # =========================
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+
         instance.save()
 
+        # =========================
+        # 🔹 Update Working Times
+        # =========================
         if working_times_data and hasattr(instance, "barber"):
+
             barber = instance.barber
 
-            for slot in working_times_data:
-                try:
-                    branch = Branch.objects.get(id=slot["branch_id"])
-                except Branch.DoesNotExist:
-                    raise serializers.ValidationError("الفرع غير موجود")
+            # ❗ نحذف القديم (حسب نظامك)
+            barber.working_times.all().delete()
 
-                # تحديث أو إنشاء
-                obj, created = WorkingTime.objects.update_or_create(
+            for slot in working_times_data:
+
+                branch_id = slot.get("branch_id")
+
+                # 🛑 حماية من الكراش
+                if not branch_id:
+                    continue
+
+                try:
+                    branch = Branch.objects.get(id=branch_id)
+                except Branch.DoesNotExist:
+                    continue  # أو ممكن ترجع error
+
+                WorkingTime.objects.create(
                     barber=barber,
                     branch=branch,
-                    date=slot["date"],  # هنا نستخدم التاريخ الفعلي
-                    defaults={
-                        "start_time": slot["start_time"],
-                        "end_time": slot["end_time"],
-                        "clients_per_hour": slot.get("clients_per_hour", 3)
-                    }
+                    date=slot.get("date"),
+                    start_time=slot.get("start_time"),
+                    end_time=slot.get("end_time"),
+                    clients_per_hour=slot.get("clients_per_hour", 3)
                 )
 
         return instance

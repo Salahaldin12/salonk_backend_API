@@ -2,7 +2,7 @@ from django.shortcuts import get_object_or_404
 from django.core.mail import send_mail
 from django.conf import settings
 
-from rest_framework.views import APIView
+from rest_framework.views import APIView, csrf_exempt
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -10,7 +10,8 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from rest_framework.permissions import AllowAny
+from barber_accounts.models import BarberPortfolio, BarberPortfolioImage
 from accounts.models import User, UserSession
 from accounts.utils import generate_reset_code
 from .serializers import BarberLoginSerializer, EditProfileSerializer
@@ -115,27 +116,38 @@ class BarberLoginView(APIView):
 class ChakmailView(APIView):
 
     def post(self, request):
-
         email = request.data.get("email")
+
+        if not email:
+            return Response(
+                {"status": "failure", "message": "البريد الإلكتروني مطلوب"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({"error": "البريد غير مسجل"}, status=404)
+            return Response(
+                {"status": "failure", "message": "البريد الإلكتروني غير مسجل"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         code = generate_reset_code()
         user.reset_code = code
         user.save()
 
         send_mail(
-            "Reset Password",
-            f"Your code is: {code}",
+            "إعادة تعيين كلمة المرور",
+            f"كود إعادة التعيين الخاص بك هو: {code}",
             settings.EMAIL_HOST_USER,
             [email],
+            fail_silently=False,
         )
 
-        return Response({"message": "تم إرسال الكود"})
-
+        return Response(
+            {"status": "success", "message": "تم إرسال الكود"},
+            status=status.HTTP_200_OK
+        )
 
 # =========================
 # 🔢 Verify Code
@@ -198,13 +210,13 @@ class ProfileView(APIView):
         serializer = EditProfileSerializer(user)
 
         data = serializer.data
-
         if hasattr(user, "barber"):
             barber = user.barber
 
             data["barber_id"] = barber.id
-            data["branch_id"] = barber.branch.id 
+            data["branch_id"] = barber.branch.id if barber.branch else None
 
+            # 🕒 Working times
             data["working_times"] = [
                 {
                     "id": wt.id,
@@ -217,6 +229,7 @@ class ProfileView(APIView):
                 for wt in barber.working_times.all()
             ]
 
+            # 🧠 Portfolio
             portfolio = getattr(barber, "portfolio", None)
 
             data["portfolio"] = {
@@ -225,13 +238,19 @@ class ProfileView(APIView):
                 "specialization": portfolio.specialization if portfolio else ""
             }
 
+            # 📸 Images
+            data["images"] = [
+                request.build_absolute_uri(img.image.url)
+                for img in barber.portfolio_images.all()
+            ]
+
         return Response({
             "status": "success",
             "data": data
         })
 
     # =========================
-    # ✏️ UPDATE PROFILE (NEW)
+    # ✏️ UPDATE PROFILE
     # =========================
     def patch(self, request):
 
@@ -249,19 +268,55 @@ class ProfileView(APIView):
         barber = getattr(user, "barber", None)
 
         # =========================
-        # 🕒 تحديث مواعيد العمل
+        # 🧠 Portfolio Update
         # =========================
+        if barber:
+
+            from barber_accounts.models import BarberPortfolio, BarberPortfolioImage
+
+            portfolio, created = BarberPortfolio.objects.get_or_create(barber=barber)
+
+            portfolio.bio = request.data.get("bio", portfolio.bio)
+            portfolio.experience_years = int(
+                request.data.get("experience_years", portfolio.experience_years)
+            )
+            portfolio.specialization = request.data.get(
+                "specialization",
+                portfolio.specialization
+            )
+
+            portfolio.save()
+
+        # =========================
+        # 📸 Upload Images
+        # =========================
+        images = request.FILES.getlist("images")
+
+        if barber and images:
+            for img in images:
+                BarberPortfolioImage.objects.create(
+                    barber=barber,
+                    image=img
+                )
+
+        # =========================
+        # 🕒 Working Times
+        # =========================
+        import json
+
         working_times = request.data.get("working_times", [])
+
+        # 🔥 الحل هنا
+        if isinstance(working_times, str):
+            working_times = json.loads(working_times)
 
         if barber and working_times:
 
-            # ❌ حذف القديم (اختياري حسب نظامك)
             barber.working_times.all().delete()
 
-            # ✔ إضافة الجديد
-            for wt in working_times:
-                from branches.models import Branch
+            from branches.models import Branch
 
+            for wt in working_times:
                 branch = Branch.objects.get(id=wt["branch_id"])
 
                 barber.working_times.create(
@@ -271,17 +326,16 @@ class ProfileView(APIView):
                     end_time=wt["end_time"],
                     clients_per_hour=wt.get("clients_per_hour", 1)
                 )
-
         return Response({
             "status": "success",
             "message": "Profile updated successfully"
         })
-    
 
 # =========================
 # 👁 Portfolio View
 # =========================
-class BarberPortfolioView(APIView):
+
+class BarberPortfolioPublicView(APIView):
 
     def get(self, request, barber_id):
 
@@ -289,31 +343,25 @@ class BarberPortfolioView(APIView):
 
         portfolio = getattr(barber, "portfolio", None)
 
+        # الصور
         images = [
             request.build_absolute_uri(img.image.url)
             for img in barber.portfolio_images.all()
         ]
 
-        sessions = UserSession.objects.filter(
-            user=barber.user
-        ).order_by("-created_at")[:5]
-
         return Response({
+            # ===== Basic Info =====
+            "barber_id": barber.id,
             "name": barber.user.name,
-            "bio": portfolio.bio if portfolio else "",
-            "images": images,
-            "last_sessions": [
-                {
-                    "device_name": s.device_name,
-                    "platform": s.platform,
-                    "ip_address": s.ip_address,
-                    "lat": s.lat,
-                    "lng": s.lng
-                }
-                for s in sessions
-            ]
-        })
+            "phone": barber.user.phone,
 
+            # ===== Portfolio Info =====
+            "bio": portfolio.bio if portfolio else "",
+            "experience_years": portfolio.experience_years if portfolio else 0,
+
+            # ===== Portfolio Images =====
+            "images": images
+        })
 
 # =================================
 # =================================

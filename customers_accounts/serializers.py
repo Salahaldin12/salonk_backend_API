@@ -47,8 +47,6 @@ class CustomerLoginSerializer(serializers.Serializer):
 
 
 class CustomerProfileSerializer(serializers.ModelSerializer):
-    sessions = serializers.SerializerMethodField()
-
     class Meta:
         model = User
         fields = [
@@ -56,13 +54,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             'email',
             'phone',
             'profile_image',
-            'sessions'
         ]
-
-    def get_sessions(self, obj):
-        sessions = UserSession.objects.filter(user=obj)
-        return UserSessionSerializer(sessions, many=True).data
-
 
         
 class UserSessionSerializer(serializers.ModelSerializer):
