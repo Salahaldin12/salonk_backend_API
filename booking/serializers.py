@@ -4,6 +4,8 @@ from branches.models import Branch
 from .models import Booking
 from customers_accounts.models import CustomerProfile
 
+from rest_framework import serializers
+from .models import Review, Booking
 
 # ===============================
 # 1️⃣ Working Time Serializer
@@ -113,3 +115,42 @@ class BookingSerializer(serializers.ModelSerializer):
             "location_url",
             "status"
         ]
+
+
+
+from customers_accounts.models import CustomerProfile
+from rest_framework import serializers
+
+class ReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Review
+        fields = ["id", "booking", "rating", "comment", "created_at"]
+
+    def validate(self, data):
+        request = self.context["request"]
+
+        # ✅ الحصول على العميل بطريقة آمنة
+        try:
+            user = CustomerProfile.objects.get(user=request.user)
+        except CustomerProfile.DoesNotExist:
+            raise serializers.ValidationError("المستخدم ليس عميل")
+
+        booking = data.get("booking")
+
+        # ✅ تحقق إن الحجز ملك المستخدم
+        if booking.user != user:
+            raise serializers.ValidationError("هذا الحجز لا يخصك")
+
+        # ✅ لازم يكون مكتمل
+        if booking.status != "completed":
+            raise serializers.ValidationError("لا يمكن التقييم قبل اكتمال الحجز")
+
+        # ✅ لازم يكون فيه حلاق
+        if not booking.barber:
+            raise serializers.ValidationError("لا يوجد حلاق مرتبط بالحجز")
+
+        # ✅ منع التكرار
+        if hasattr(booking, "review"):
+            raise serializers.ValidationError("تم التقييم مسبقاً")
+
+        return data

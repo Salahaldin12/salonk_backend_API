@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     AvailableSlotsView,
+    CreateReviewView,
     CreateShopBookingView,
     CreateHomeBookingView,
     MyBookingsView,
@@ -54,5 +55,7 @@ urlpatterns = [
         BarberBookingsView.as_view(),
         name="barber-bookings"
     ),
+
+    path("reviews/", CreateReviewView.as_view(), name="create-review"),
 
 ]

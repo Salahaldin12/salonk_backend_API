@@ -1,8 +1,11 @@
 import math
+from django.db.models import Avg, Count
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+
 from .models import Branch
+from booking.models import Review  # مهم
 
 
 class NearbyBranches(APIView):
@@ -20,8 +23,23 @@ class NearbyBranches(APIView):
         user_lat = float(lat)
         user_lng = float(lng)
 
-        # select_related لتحسين الأداء
-        branches = Branch.objects.select_related("barber").filter(is_active=True)
+        # 🔥 تحسين الأداء
+        branches = Branch.objects.select_related("barber", "barber__user").filter(is_active=True)
+
+        # 🔥 نجيب التقييمات مرة واحدة
+        reviews_data = Review.objects.values("barber").annotate(
+            avg_rating=Avg("rating"),
+            total_reviews=Count("id")
+        )
+
+        # نحولها لـ dict عشان lookup سريع
+        reviews_dict = {
+            r["barber"]: {
+                "rating": round(r["avg_rating"], 1) if r["avg_rating"] else 0,
+                "count": r["total_reviews"]
+            }
+            for r in reviews_data
+        }
 
         def distance(lat1, lng1, lat2, lng2):
             R = 6371
@@ -49,6 +67,12 @@ class NearbyBranches(APIView):
                 float(branch.lng),
             )
 
+            # 🔥 نجيب التقييم
+            review_info = reviews_dict.get(branch.barber.id, {
+                "rating": 0,
+                "count": 0
+            })
+
             data.append({
                 "id": branch.id,
                 "branch_name": branch.name,
@@ -56,12 +80,16 @@ class NearbyBranches(APIView):
                 "lng": branch.lng,
                 "distance": round(dist, 2),
 
-                # معلومات الحلاق
+                # 👇 معلومات الحلاق
                 "barber_id": branch.barber.id,
                 "barber_name": branch.barber.user.name,
                 "barber_phone": branch.barber.user.phone,
                 "barber_email": branch.barber.user.email,
                 "barber_image": branch.barber.user.profile_image.url if branch.barber.user.profile_image else None,
+
+                # ⭐ التقييمات
+                "rating": review_info["rating"],
+                "reviews_count": review_info["count"],
             })
 
         data.sort(key=lambda x: x["distance"])

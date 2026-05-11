@@ -1,9 +1,9 @@
 from django.db import models
+from django.db.models import Q
 from barber_accounts.models import BarberProfile
 from customers_accounts.models import CustomerProfile
 from branches.models import Branch
-from django.db import models
-from django.db.models import Q
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class Booking(models.Model):
@@ -59,13 +59,15 @@ class Booking(models.Model):
         default="pending"
     )
 
+    # ⭐ جديد
+    is_reviewed = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["date", "time"]
 
         constraints = [
-            # 🔥 يمنع user يعمل اكتر من حجز active
             models.UniqueConstraint(
                 fields=["user"],
                 condition=Q(status__in=["pending", "confirmed"]),
@@ -73,5 +75,55 @@ class Booking(models.Model):
             )
         ]
 
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["date"]),
+        ]
+
     def __str__(self):
         return f"{self.user} - {self.barber} - {self.date} {self.time}"
+    
+
+
+
+class Review(models.Model):
+
+    user = models.ForeignKey(
+        CustomerProfile,
+        on_delete=models.CASCADE,
+        related_name="reviews"
+    )
+
+    barber = models.ForeignKey(
+        BarberProfile,
+        on_delete=models.CASCADE,
+        related_name="reviews"
+    )
+
+    booking = models.OneToOneField(
+        Booking,
+        on_delete=models.CASCADE,
+        related_name="review"
+    )
+
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+
+    comment = models.TextField(blank=True, null=True)
+
+    # ⭐ جديد (مهم للـ moderation)
+    is_approved = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        indexes = [
+            models.Index(fields=["rating"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user} - {self.barber} ({self.rating})"
