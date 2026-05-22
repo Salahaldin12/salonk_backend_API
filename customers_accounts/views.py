@@ -9,8 +9,9 @@ from accounts.models import User, UserSession
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from notifications.models import FCMDevice
 from customers_accounts.models import CustomerProfile
+from notifications.services import NotificationService
 
 from .serializers import (
     CustomerRegisterSerializer,
@@ -122,10 +123,11 @@ class CustomerVerifyView(APIView):
 
         return Response({"status": "success"})
 
-
-# ===== Login (🔥 تم التعديل) =====
+# ===== Login =====
 class CustomerLoginView(APIView):
+
     def post(self, request):
+
         serializer = CustomerLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -137,29 +139,45 @@ class CustomerLoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # 🔥 Generate JWT
+        # =========================
+        # JWT
+        # =========================
         refresh = RefreshToken.for_user(user)
+
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
 
-        # 🌍 IP
+        # =========================
+        # LOCATION
+        # =========================
         lat = request.data.get("lat")
         lng = request.data.get("lng")
 
-        # 🌍 Location from IP
-        country, city = get_location_from_coords(lat,lng)
+        country, city = get_location_from_coords(lat, lng)
 
-        # 📱 Device info
-        device_name = request.data.get("device_name", "Unknown")
-        platform = request.data.get("platform", "Unknown")
+        # =========================
+        # DEVICE INFO
+        # =========================
+        device_name = request.data.get(
+            "device_name",
+            "Unknown Device"
+        )
 
-        # 🔐 تحديث بيانات المستخدم
-        #user.last_login_ip = ip
+        platform = request.data.get(
+            "platform",
+            "Unknown"
+        )
+
+        # =========================
+        # UPDATE USER
+        # =========================
         user.last_login_device = device_name
         user.save()
 
-        # 🔥 إنشاء Session
-        UserSession.objects.create(
+        # =========================
+        # CREATE SESSION
+        # =========================
+        session = UserSession.objects.create(
             user=user,
             refresh_token=refresh_token,
             device_name=device_name,
@@ -167,11 +185,76 @@ class CustomerLoginView(APIView):
             country=country or "Unknown",
             city=city or "Unknown"
         )
+        # =========================
+        # SAVE FCM TOKEN
+        # =========================
+        fcm_token = request.data.get("fcm_token")
 
+        if fcm_token:
+
+            FCMDevice.objects.update_or_create(
+
+                fcm_token=fcm_token,
+
+                defaults={
+
+                    "user": user,
+
+                    "device_type": platform,
+
+                    "is_active": True,
+                }
+            )
+
+            print("✅ FCM TOKEN SAVED")
+        # =========================
+        # SEND LOGIN NOTIFICATION
+        # =========================
+        try:
+
+            NotificationService.send_notification(
+
+                user=user,
+
+                title="تم تسجيل دخول جديد",
+
+                body=(
+                    f"تم تسجيل الدخول من "
+                    f"{device_name} - "
+                    f"{city}, {country}"
+                ),
+
+                notification_type="security",
+
+                category="login",
+
+                reference_id=session.id,
+
+                screen="security_sessions",
+
+                extra_data={
+                    "device_name": device_name,
+                    "platform": platform,
+                    "city": city,
+                    "country": country,
+                }
+            )
+
+        except Exception as e:
+
+            print("LOGIN NOTIFICATION ERROR:", e)
+
+        # =========================
+        # RESPONSE
+        # =========================
         return Response({
+
             "status": "success",
+
             "access": access_token,
+
             "refresh": refresh_token,
+
             "data": {
                 "id": user.id,
                 "name": user.name,
@@ -235,32 +318,107 @@ class VerifyResetCodeView(APIView):
 
 # ===================== Reset Password =====================
 class ResetPasswordView(APIView):
+
     def post(self, request):
+
         email = request.data.get("email")
         reset_code = request.data.get("reset_code")
         new_password = request.data.get("new_password")
 
         if not email or not new_password or not reset_code:
+
             return Response(
-                {"status": "failure", "message": "بيانات ناقصة"},
+                {
+                    "status": "failure",
+                    "message": "بيانات ناقصة"
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
-            user = User.objects.get(email=email, reset_code=reset_code)
+
+            user = User.objects.get(
+                email=email,
+                reset_code=reset_code
+            )
+
         except User.DoesNotExist:
+
             return Response(
-                {"status": "failure", "message": "بيانات غير صحيحة"},
+                {
+                    "status": "failure",
+                    "message": "بيانات غير صحيحة"
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # =========================
+        # CHANGE PASSWORD
+        # =========================
         user.set_password(new_password)
+
         user.reset_code = None
+
         user.save()
 
-        return Response({"status": "success"})
+        # =========================
+        # SEND EMAIL
+        # =========================
+        try:
 
+            send_mail(
 
+                subject="تم تغيير كلمة المرور",
+
+                message=(
+                    f"مرحبًا {user.name},\n\n"
+                    f"تم تغيير كلمة المرور الخاصة بحسابك بنجاح.\n\n"
+                    f"إذا لم تقم أنت بهذا التغيير "
+                    f"يرجى التواصل مع الدعم فورًا."
+                ),
+
+                from_email=settings.DEFAULT_FROM_EMAIL,
+
+                recipient_list=[user.email],
+
+                fail_silently=False
+            )
+
+            print("✅ Password change email sent")
+
+        except Exception as e:
+
+            print("❌ EMAIL ERROR:", e)
+
+        # =========================
+        # PUSH NOTIFICATION
+        # =========================
+        try:
+
+            NotificationService.send_notification(
+
+                user=user,
+
+                title="تم تغيير كلمة المرور",
+
+                body=(
+                    "تم تحديث كلمة المرور الخاصة بحسابك بنجاح"
+                ),
+
+                notification_type="security",
+
+                category="password_changed",
+
+                screen="security"
+            )
+
+        except Exception as e:
+
+            print("❌ NOTIFICATION ERROR:", e)
+
+        return Response({
+            "status": "success"
+        })
 # ===== Profile =====
 class CustomerProfileView(APIView):
     authentication_classes = [JWTAuthentication]

@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'branches',
     'channels',
     'store',
+    'notifications',
 ]
 
 # =========================

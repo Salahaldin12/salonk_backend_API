@@ -1,10 +1,12 @@
 from django.urls import path
 
 from barber_accounts.views import (
+    BarberAnalyticsView,
     BarberLoginView,
     BarberChangePasswordView,
     BarberPortfolioPublicView,
     ChakmailView,
+    DeletePortfolioImageView,
     ManageSessionsView,
     VerifyResetCodeView,
     ProfileView,
@@ -38,7 +40,15 @@ urlpatterns = [
     # =========================
     #path('portfolio/', BarberPortfolioUploadView.as_view()),
     path('portfolio/<int:barber_id>/', BarberPortfolioPublicView.as_view()),
-
+    path(
+    "profile/delete-image/",
+    DeletePortfolioImageView.as_view()
+),
 
     path('token_refresh/', TokenRefreshView.as_view(),),
+
+    path(
+    "analytics/",
+    BarberAnalyticsView.as_view()
+),
 ]

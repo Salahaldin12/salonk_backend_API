@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, date as dt_date
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -8,18 +9,24 @@ from rest_framework.generics import CreateAPIView
 
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.core.mail import send_mail
+from django.conf import settings
 
 from barber_accounts.models import WorkingTime, BarberProfile
 from branches.models import Branch
 from customers_accounts.models import CustomerProfile
+
 from .models import Booking, Review
 from .serializers import ReviewSerializer
-from django.core.mail import send_mail
-from django.conf import settings
+
+# 🔥 Notification Service
+from notifications.services import NotificationService
+
 
 #===========================================
 # عرض مواعيد الحجز المتاحة
 #===========================================
+from datetime import datetime, timedelta, date
 class AvailableSlotsView(APIView):
 
     authentication_classes = [JWTAuthentication]
@@ -27,27 +34,50 @@ class AvailableSlotsView(APIView):
 
     def post(self, request):
 
-        branch = get_object_or_404(Branch, id=request.data.get("branch_id"))
-        barber = get_object_or_404(BarberProfile, id=request.data.get("barber_id"))
+        branch = get_object_or_404(
+            Branch,
+            id=request.data.get("branch_id")
+        )
 
+        barber = get_object_or_404(
+            BarberProfile,
+            id=request.data.get("barber_id")
+        )
+
+        today = date.today()
+        now = datetime.now()
+
+        # =========================
+        # 🔥 فقط اليوم والمستقبل
+        # =========================
         working_days = WorkingTime.objects.filter(
             barber=barber,
-            branch=branch
+            branch=branch,
+            date__gte=today
         ).order_by("date")
 
         result = []
 
         for day in working_days:
 
-            current = datetime.combine(day.date, day.start_time)
-            end_datetime = datetime.combine(day.date, day.end_time)
+            start_dt = datetime.combine(day.date, day.start_time)
+            end_dt = datetime.combine(day.date, day.end_time)
 
             slots = []
             slot_duration = timedelta(hours=1)
 
-            while current < end_datetime:
+            current = start_dt
+
+            while current < end_dt:
 
                 slot_time = current.time()
+
+                # =========================
+                # 🔥 منع الوقت اللي فات في نفس اليوم
+                # =========================
+                if day.date == today and current < now:
+                    current += slot_duration
+                    continue
 
                 booked_count = Booking.objects.filter(
                     barber=barber,
@@ -58,17 +88,20 @@ class AvailableSlotsView(APIView):
                 ).count()
 
                 if booked_count < day.clients_per_hour:
-                    slots.append(slot_time)
+                    slots.append(slot_time.strftime("%H:%M"))
 
                 current += slot_duration
 
             if slots:
                 result.append({
-                    "date": day.date,
+                    "date": day.date.strftime("%Y-%m-%d"),
                     "slots": slots
                 })
 
-        return Response({"available_days": result})
+        return Response({
+            "status": "success",
+            "available_days": result
+        })
 
 
 #===========================================
@@ -81,19 +114,41 @@ class CreateShopBookingView(APIView):
 
     def post(self, request):
 
-        branch = get_object_or_404(Branch, id=request.data.get("branch_id"))
-        barber = get_object_or_404(BarberProfile, id=request.data.get("barber_id"))
+        branch = get_object_or_404(
+            Branch,
+            id=request.data.get("branch_id")
+        )
 
-        booking_date = dt_date.fromisoformat(request.data.get("date"))
-        booking_time = datetime.strptime(request.data.get("time"), "%H:%M").time()
+        barber = get_object_or_404(
+            BarberProfile,
+            id=request.data.get("barber_id")
+        )
 
-        customer = get_object_or_404(CustomerProfile, user=request.user)
+        booking_date = dt_date.fromisoformat(
+            request.data.get("date")
+        )
 
+        booking_time = datetime.strptime(
+            request.data.get("time"),
+            "%H:%M"
+        ).time()
+
+        customer = get_object_or_404(
+            CustomerProfile,
+            user=request.user
+        )
+
+        # =========================
+        # منع تعدد الحجوزات النشطة
+        # =========================
         if Booking.objects.filter(
             user=customer,
             status__in=["pending", "confirmed"]
         ).exists():
-            return Response({"error": "active booking exists"}, status=400)
+
+            return Response({
+                "error": "active booking exists"
+            }, status=400)
 
         with transaction.atomic():
 
@@ -104,7 +159,10 @@ class CreateShopBookingView(APIView):
             ).first()
 
             if not working_time:
-                return Response({"error": "barber not working"}, status=400)
+
+                return Response({
+                    "error": "barber not working"
+                }, status=400)
 
             booked_count = Booking.objects.select_for_update().filter(
                 barber=barber,
@@ -115,7 +173,10 @@ class CreateShopBookingView(APIView):
             ).count()
 
             if booked_count >= working_time.clients_per_hour:
-                return Response({"error": "slot full"}, status=400)
+
+                return Response({
+                    "error": "slot full"
+                }, status=400)
 
             booking = Booking.objects.create(
                 barber=barber,
@@ -127,7 +188,44 @@ class CreateShopBookingView(APIView):
                 status="pending"
             )
 
-        return Response({"message": "booking created", "booking_id": booking.id})
+            # =========================
+            # إشعار للحلاق
+            # =========================
+            NotificationService.send_notification(
+                
+                user=barber.user,
+                title="🔥 حجز جديد",
+                body=f"لديك حجز جديد يوم {booking.date}",
+                notification_type="barber_advance_booking",
+                category="booking",
+                screen="booking_details",
+                extra_data={
+                    "booking_id": booking.id,
+                    "booking_type": booking.booking_type,
+                    "date": str(booking.date),
+                    "time": str(booking.time),
+                }
+            )
+
+            # =========================
+            # إشعار للعميل
+            # =========================
+            NotificationService.send_notification(
+                user=request.user,
+                title="✅ تم إنشاء الحجز",
+                body="تم إرسال طلب الحجز بنجاح",
+                notification_type="user_advance_booking",
+                category="booking",
+                screen="my_bookings",
+                extra_data={
+                    "booking_id": booking.id,
+                }
+            )
+
+        return Response({
+            "message": "booking created",
+            "booking_id": booking.id
+        })
 
 
 #===========================================
@@ -140,20 +238,40 @@ class CreateHomeBookingView(APIView):
 
     def post(self, request):
 
-        branch = get_object_or_404(Branch, id=request.data.get("branch_id"))
-        barber = get_object_or_404(BarberProfile, id=request.data.get("barber_id"))
+        branch = get_object_or_404(
+            Branch,
+            id=request.data.get("branch_id")
+        )
 
-        booking_date = dt_date.fromisoformat(request.data.get("date"))
-        booking_time = datetime.strptime(request.data.get("time"), "%H:%M").time()
+        barber = get_object_or_404(
+            BarberProfile,
+            id=request.data.get("barber_id")
+        )
+
+        booking_date = dt_date.fromisoformat(
+            request.data.get("date")
+        )
+
+        booking_time = datetime.strptime(
+            request.data.get("time"),
+            "%H:%M"
+        ).time()
 
         location_url = request.data.get("location_url")
-        customer = get_object_or_404(CustomerProfile, user=request.user)
+
+        customer = get_object_or_404(
+            CustomerProfile,
+            user=request.user
+        )
 
         if Booking.objects.filter(
             user=customer,
             status__in=["pending", "confirmed"]
         ).exists():
-            return Response({"error": "active booking exists"}, status=400)
+
+            return Response({
+                "error": "active booking exists"
+            }, status=400)
 
         with transaction.atomic():
 
@@ -164,7 +282,10 @@ class CreateHomeBookingView(APIView):
             ).first()
 
             if not working_time:
-                return Response({"error": "barber not working"}, status=400)
+
+                return Response({
+                    "error": "barber not working"
+                }, status=400)
 
             booked_count = Booking.objects.select_for_update().filter(
                 barber=barber,
@@ -175,7 +296,10 @@ class CreateHomeBookingView(APIView):
             ).count()
 
             if booked_count >= working_time.clients_per_hour:
-                return Response({"error": "slot full"}, status=400)
+
+                return Response({
+                    "error": "slot full"
+                }, status=400)
 
             booking = Booking.objects.create(
                 barber=barber,
@@ -188,7 +312,44 @@ class CreateHomeBookingView(APIView):
                 status="pending"
             )
 
-        return Response({"message": "home booking created", "booking_id": booking.id})
+            # =========================
+            # إشعار للحلاق
+            # =========================
+            NotificationService.send_notification(
+                user=barber.user,
+                title="🏠 حجز منزلي جديد",
+                body=f"لديك حجز منزلي يوم {booking.date}",
+                notification_type="barber_home_booking",
+                category="booking",
+                screen="booking_details",
+                extra_data={
+                    "booking_id": booking.id,
+                    "booking_type": booking.booking_type,
+                    "date": str(booking.date),
+                    "time": str(booking.time),
+                    "location_url": booking.location_url,
+                }
+            )
+
+            # =========================
+            # إشعار للعميل
+            # =========================
+            NotificationService.send_notification(
+                user=request.user,
+                title="✅ تم إرسال الحجز المنزلي",
+                body="تم إرسال طلب الحجز المنزلي بنجاح",
+                notification_type="user_home_booking",
+                category="booking",
+                screen="my_bookings",
+                extra_data={
+                    "booking_id": booking.id,
+                }
+            )
+
+        return Response({
+            "message": "home booking created",
+            "booking_id": booking.id
+        })
 
 
 #===========================================
@@ -201,15 +362,23 @@ class MyBookingsView(APIView):
 
     def get(self, request):
 
-        customer = get_object_or_404(CustomerProfile, user=request.user)
+        customer = get_object_or_404(
+            CustomerProfile,
+            user=request.user
+        )
 
-        bookings = Booking.objects.filter(user=customer).order_by("-date")
+        bookings = Booking.objects.filter(
+            user=customer
+        ).order_by("-date")
 
         data = []
 
         for b in bookings:
 
-            booking_datetime = datetime.combine(b.date, b.time)
+            booking_datetime = datetime.combine(
+                b.date,
+                b.time
+            )
 
             can_review = (
                 b.status == "completed"
@@ -235,24 +404,46 @@ class MyBookingsView(APIView):
         action = request.data.get("action")
         booking_id = request.data.get("booking_id")
 
-        customer = get_object_or_404(CustomerProfile, user=request.user)
+        customer = get_object_or_404(
+            CustomerProfile,
+            user=request.user
+        )
 
-        booking = get_object_or_404(Booking, id=booking_id, user=customer)
+        booking = get_object_or_404(
+            Booking,
+            id=booking_id,
+            user=customer
+        )
 
-        booking_datetime = datetime.combine(booking.date, booking.time)
+        booking_datetime = datetime.combine(
+            booking.date,
+            booking.time
+        )
 
         if booking.status in ["confirmed", "completed"]:
-            return Response({"error": "cannot modify"}, status=400)
+
+            return Response({
+                "error": "cannot modify"
+            }, status=400)
 
         if booking_datetime - datetime.now() <= timedelta(minutes=30):
-            return Response({"error": "too late"}, status=400)
+
+            return Response({
+                "error": "too late"
+            }, status=400)
 
         if action == "cancel":
+
             booking.status = "cancelled"
             booking.save()
-            return Response({"message": "cancelled"})
 
-        return Response({"error": "invalid action"}, status=400)
+            return Response({
+                "message": "cancelled"
+            })
+
+        return Response({
+            "error": "invalid action"
+        }, status=400)
 
 
 #===========================================
@@ -265,13 +456,23 @@ class BarberBookingsView(APIView):
 
     def get(self, request):
 
-        barber = get_object_or_404(BarberProfile, user=request.user)
+        barber = get_object_or_404(
+            BarberProfile,
+            user=request.user
+        )
 
-        bookings = Booking.objects.filter(barber=barber).order_by("date", "time")
+        # =========================
+        # 🔥 فلترة الحجوزات (بدون completed/cancelled)
+        # =========================
+        bookings = Booking.objects.filter(
+            barber=barber,
+            status__in=["pending", "confirmed"]
+        ).order_by("date", "time")
 
         data = []
 
         for b in bookings:
+
             data.append({
                 "id": b.id,
                 "customer_name": b.user.user.name,
@@ -287,14 +488,22 @@ class BarberBookingsView(APIView):
 
     def patch(self, request):
 
-        barber = get_object_or_404(BarberProfile, user=request.user)
+        barber = get_object_or_404(
+            BarberProfile,
+            user=request.user
+        )
 
         booking_id = request.data.get("booking_id")
         action = request.data.get("action")
 
-        booking = get_object_or_404(Booking, id=booking_id, barber=barber)
+        booking = get_object_or_404(
+            Booking,
+            id=booking_id,
+            barber=barber
+        )
 
         if action == "cancel":
+
             booking.status = "cancelled"
 
         elif action == "confirm":
@@ -316,12 +525,58 @@ class BarberBookingsView(APIView):
 
         booking.save()
 
+        # =========================
+        # 🔔 Notifications
+        # =========================
+        if action == "confirm":
+
+            NotificationService.send_notification(
+                user=booking.user.user,
+                title="✅ تم تأكيد الحجز",
+                body="قام الحلاق بتأكيد الحجز الخاص بك",
+                notification_type="user_advance_booking",
+                category="booking",
+                screen="my_bookings",
+                extra_data={
+                    "booking_id": booking.id,
+                    "status": booking.status
+                }
+            )
+
+        elif action == "cancel":
+
+            NotificationService.send_notification(
+                user=booking.user.user,
+                title="❌ تم إلغاء الحجز",
+                body="قام الحلاق بإلغاء الحجز",
+                notification_type="general",
+                category="booking",
+                screen="my_bookings",
+                extra_data={
+                    "booking_id": booking.id,
+                    "status": booking.status
+                }
+            )
+
+        elif action == "complete":
+
+            NotificationService.send_notification(
+                user=booking.user.user,
+                title="🎉 اكتمل الحجز",
+                body="تم إنهاء الخدمة بنجاح",
+                notification_type="general",
+                category="booking",
+                screen="my_bookings",
+                extra_data={
+                    "booking_id": booking.id,
+                    "status": booking.status
+                }
+            )
+
         return Response({
             "message": f"{action} done",
             "status": booking.status
         })
-
-
 #===========================================
 # التقييم
 #===========================================
@@ -332,7 +587,11 @@ class CreateReviewView(CreateAPIView):
 
     def perform_create(self, serializer):
 
-        user = get_object_or_404(CustomerProfile, user=self.request.user)
+        user = get_object_or_404(
+            CustomerProfile,
+            user=self.request.user
+        )
+
         booking = serializer.validated_data["booking"]
         rating = serializer.validated_data["rating"]
         comment = serializer.validated_data.get("comment", "")
@@ -345,15 +604,36 @@ class CreateReviewView(CreateAPIView):
             barber=booking.barber
         )
 
-        # 🔥 تحديث الحجز
+        # =========================
+        # تحديث الحجز
+        # =========================
         booking.is_reviewed = True
         booking.save()
 
         # =========================
-        # 🚨 لو التقييم سلبي
+        # إشعار للحلاق
+        # =========================
+        NotificationService.send_notification(
+            user=booking.barber.user,
+            title="⭐ تقييم جديد",
+            body=f"حصلت على تقييم {rating} نجوم",
+            notification_type="new_review",
+            category="review",
+            screen="reviews",
+            extra_data={
+                "booking_id": booking.id,
+                "rating": rating,
+                "comment": comment
+            }
+        )
+
+        # =========================
+        # لو التقييم سلبي
         # =========================
         if rating <= 2:
+
             try:
+
                 subject = "🚨 تقييم سلبي جديد"
 
                 message = f"""
@@ -375,14 +655,15 @@ class CreateReviewView(CreateAPIView):
                     subject,
                     message,
                     settings.EMAIL_HOST_USER,
-                    ["aslah4791@gmail.com"],  # غيرها لبريدك
+                    ["aslah4791@gmail.com"],
                     fail_silently=True,
                 )
 
             except Exception as e:
                 print("Email failed:", e)
+
         return review
-            
+
     def create(self, request, *args, **kwargs):
 
         response = super().create(request, *args, **kwargs)

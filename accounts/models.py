@@ -82,7 +82,22 @@ class UserSession(models.Model):
 
     # 🔐 التوكن الأساسي للجلسة
     refresh_token = models.TextField()
+    # 🔔 Firebase Cloud Messaging Token
+    fcm_token = models.TextField(
+        null=True,
+        blank=True
+    )
 
+    # 📱 نوع التطبيق
+    APP_TYPES = (
+        ('customer', 'Customer App'),
+        ('barber', 'Barber App'),
+    )
+
+    app_type = models.CharField(
+        max_length=20,
+        choices=APP_TYPES
+    )
     # 📱 معلومات الجهاز
     device_name = models.CharField(max_length=255)
     platform = models.CharField(max_length=50)

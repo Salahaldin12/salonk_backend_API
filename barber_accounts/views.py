@@ -14,6 +14,9 @@ from rest_framework.permissions import AllowAny
 from barber_accounts.models import BarberPortfolio, BarberPortfolioImage
 from accounts.models import User, UserSession
 from accounts.utils import generate_reset_code
+from booking.models import Booking, Review
+from notifications.models import FCMDevice
+from notifications.services import NotificationService
 from .serializers import BarberLoginSerializer, EditProfileSerializer
 from .models import (
     BarberProfile,
@@ -63,28 +66,74 @@ class BarberLoginView(APIView):
     def post(self, request):
 
         serializer = BarberLoginSerializer(data=request.data)
+
         serializer.is_valid(raise_exception=True)
 
         user = serializer.validated_data
 
+        # =========================
+        # Validate Barber
+        # =========================
         if not hasattr(user, "barber"):
-            return Response({"error": "هذا الحساب ليس حلاق"}, status=403)
 
+            return Response({
+                "error": "هذا الحساب ليس حلاق"
+            }, status=403)
+
+        # =========================
+        # Validate Active
+        # =========================
         if not user.is_active:
-            return Response({"message": "الحساب غير مفعل"}, status=403)
 
+            return Response({
+                "message": "الحساب غير مفعل"
+            }, status=403)
+
+        # =========================
+        # Generate JWT
+        # =========================
         refresh = RefreshToken.for_user(user)
 
         ip = get_client_ip(request)
-        device_name = request.data.get("device_name", "Unknown")
-        platform = request.data.get("platform", "Unknown")
 
-        # تحديث بيانات المستخدم
+        device_name = request.data.get(
+            "device_name",
+            "Unknown"
+        )
+
+        platform = request.data.get(
+            "platform",
+            "Unknown"
+        )
+
+        # =========================
+        # Update User Login Info
+        # =========================
         user.last_login_ip = ip
         user.last_login_device = device_name
         user.save()
+        # =========================
+        # 🔔 Save FCM Token
+        # =========================
+        fcm_token = request.data.get("fcm_token")
 
-        # 🔥 إنشاء Session
+        if fcm_token:
+
+            FCMDevice.objects.update_or_create(
+
+                user=user,
+
+                defaults={
+                    "fcm_token": fcm_token,
+                    "is_active": True
+                }
+            )
+
+            print("✅ FCM TOKEN SAVED:", fcm_token)
+
+        # =========================
+        # Create Session
+        # =========================
         UserSession.objects.create(
             user=user,
             refresh_token=str(refresh),
@@ -95,12 +144,30 @@ class BarberLoginView(APIView):
             lng=request.data.get("lng")
         )
 
+        # =========================
+        # 🔔 Login Notification
+        # =========================
+        NotificationService.send_notification(
+            user=user,
+            title="تم تسجيل الدخول بنجاح",
+            body=f"تم تسجيل الدخول من جهاز {device_name}",
+            notification_type="login",
+            category="security",
+            screen="profile"
+        )
+
         return Response({
+
             "status": "success",
+
             "access": str(refresh.access_token),
+
             "refresh": str(refresh),
+
             "role": "barber",
+
             "data": {
+
                 "id": user.id,
                 "name": user.name,
                 "email": user.email,
@@ -108,6 +175,7 @@ class BarberLoginView(APIView):
                 "is_verified": user.barber.is_verified
             }
         })
+
 
 
 # =========================
@@ -166,6 +234,7 @@ class VerifyResetCodeView(APIView):
         return Response({"status": "success"})
 
 
+
 # =========================
 # 🔑 Change Password
 # =========================
@@ -174,18 +243,68 @@ class BarberChangePasswordView(APIView):
     def post(self, request):
 
         email = request.data.get("email")
+
         password = request.data.get("new_password")
 
-        user = get_object_or_404(User, email=email)
+        # =========================
+        # Get User
+        # =========================
+        user = get_object_or_404(
+            User,
+            email=email
+        )
 
+        # =========================
+        # Validate Barber
+        # =========================
         if not hasattr(user, "barber"):
-            return Response({"error": "غير مصرح"}, status=403)
 
+            return Response({
+                "error": "غير مصرح"
+            }, status=403)
+
+        # =========================
+        # Change Password
+        # =========================
         user.set_password(password)
+
         user.save()
 
-        return Response({"status": "success"})
+        # =========================
+        # 🔔 Push Notification
+        # =========================
+        NotificationService.send_notification(
+            user=user,
+            title="تم تغيير كلمة المرور",
+            body="تم تحديث كلمة المرور الخاصة بحسابك بنجاح",
+            notification_type="security",
+            category="security",
+            screen="profile"
+        )
 
+        # =========================
+        # 📧 Success Email
+        # =========================
+        send_mail(
+
+            subject="تم تغيير كلمة المرور بنجاح",
+
+            message=(
+                f"مرحباً {user.name},\n\n"
+                "تم تغيير كلمة المرور الخاصة بحسابك بنجاح.\n\n"
+                "إذا لم تقم بهذا التغيير، يرجى التواصل مع الدعم الفني فوراً."
+            ),
+
+            from_email=settings.EMAIL_HOST_USER,
+
+            recipient_list=[user.email],
+
+            fail_silently=False,
+        )
+
+        return Response({
+            "status": "success"
+        })
 
 
 # =========================
@@ -319,6 +438,7 @@ class ProfileView(APIView):
             for wt in working_times:
                 branch = Branch.objects.get(id=wt["branch_id"])
 
+
                 barber.working_times.create(
                     branch=branch,
                     date=wt["date"],
@@ -348,9 +468,16 @@ class BarberPortfolioPublicView(APIView):
             request.build_absolute_uri(img.image.url)
             for img in barber.portfolio_images.all()
         ]
+        profile_image = None
+
+        if barber.user.profile_image:
+            profile_image = request.build_absolute_uri(
+                barber.user.profile_image.url
+            )
 
         return Response({
             # ===== Basic Info =====
+            "profile_image": profile_image,
             "barber_id": barber.id,
             "name": barber.user.name,
             "phone": barber.user.phone,
@@ -362,6 +489,67 @@ class BarberPortfolioPublicView(APIView):
             # ===== Portfolio Images =====
             "images": images
         })
+
+# =====================================
+# =====================================
+
+class DeletePortfolioImageView(APIView):
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+
+        user = request.user
+
+        barber = getattr(user, "barber", None)
+
+        if not barber:
+            return Response({
+                "error": "Barber profile not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        image_url = request.data.get("image")
+
+        if not image_url:
+            return Response({
+                "error": "Image url required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # =========================
+        # Find Image
+        # =========================
+        image_obj = None
+
+        for img in barber.portfolio_images.all():
+
+            full_url = request.build_absolute_uri(img.image.url)
+
+            if full_url == image_url:
+                image_obj = img
+                break
+
+        if not image_obj:
+            return Response({
+                "error": "Image not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # =========================
+        # Delete File From Storage
+        # =========================
+        if image_obj.image:
+            image_obj.image.delete(save=False)
+
+        # =========================
+        # Delete DB Record
+        # =========================
+        image_obj.delete()
+
+        return Response({
+            "status": "success",
+            "message": "Image deleted successfully"
+        })
+
 
 # =================================
 # =================================
@@ -463,3 +651,105 @@ class ManageSessionsView(APIView):
             "status": "error",
             "message": "Invalid action"
         }, status=400)
+    
+
+#======================================
+# التحليلات 
+#=====================================
+
+from django.db.models import Count, Avg
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+
+from barber_accounts.models import BarberProfile
+
+class BarberAnalyticsView(APIView):
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        barber = BarberProfile.objects.get(
+            user=request.user
+        )
+
+        bookings = Booking.objects.filter(
+            barber=barber
+        )
+
+        # =========================
+        # Overview
+        # =========================
+        total_bookings = bookings.count()
+
+        completed = bookings.filter(
+            status="completed"
+        ).count()
+
+        cancelled = bookings.filter(
+            status="cancelled"
+        ).count()
+
+        pending = bookings.filter(
+            status="pending"
+        ).count()
+
+        customers = bookings.values(
+            "user"
+        ).distinct().count()
+
+        # =========================
+        # Ratings
+        # =========================
+        reviews = Review.objects.filter(
+            barber=barber
+        )
+
+        avg_rating = reviews.aggregate(
+            Avg("rating")
+        )["rating__avg"] or 0
+
+        # =========================
+        # Booking Status Chart
+        # =========================
+        booking_chart = bookings.values(
+            "status"
+        ).annotate(
+            count=Count("id")
+        )
+
+        # =========================
+        # Ratings Distribution
+        # =========================
+        ratings_chart = reviews.values(
+            "rating"
+        ).annotate(
+            count=Count("id")
+        ).order_by("rating")
+
+        return Response({
+
+            "overview": {
+
+                "total_bookings": total_bookings,
+                "completed_bookings": completed,
+                "cancelled_bookings": cancelled,
+                "pending_bookings": pending,
+                "total_customers": customers,
+                "average_rating": round(avg_rating, 1)
+
+            },
+
+            "booking_status_chart": booking_chart,
+
+            "ratings_distribution": ratings_chart
+
+        })
+
+
+
+

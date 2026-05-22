@@ -14,7 +14,9 @@ urlpatterns = [
     path('branches/', include('branches.urls')),
     path('barber_accounts/', include('barber_accounts.urls')),
     path('customers_accounts/', include('customers_accounts.urls')),
+    path("notifications/", include("notifications.urls")),
+
 ]
 
 # 👇 مهم جدًا
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)  # notification

@@ -5,8 +5,11 @@ __pycache__/
 
 .env
 db.sqlite3
+
 /products/
 /media/
 /staticfiles/
+
+firebase/serviceAccountKey.json
 
 *.log
