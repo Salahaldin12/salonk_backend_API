@@ -577,6 +577,8 @@ class BarberBookingsView(APIView):
             "message": f"{action} done",
             "status": booking.status
         })
+    
+    
 #===========================================
 # التقييم
 #===========================================

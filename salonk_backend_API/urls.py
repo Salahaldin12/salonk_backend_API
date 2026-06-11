@@ -15,6 +15,7 @@ urlpatterns = [
     path('barber_accounts/', include('barber_accounts.urls')),
     path('customers_accounts/', include('customers_accounts.urls')),
     path("notifications/", include("notifications.urls")),
+    path('hair_tryon/', include('hair_tryon.urls')),
 
 ]
 

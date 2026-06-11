@@ -47,6 +47,5 @@ class SaveFCMTokenView(APIView):
 
             "message": "FCM token saved successfully",
             "created": created,
-            "token": device.fcm_token
-
+            "token": device.fcm_token,
         }, status=status.HTTP_200_OK)

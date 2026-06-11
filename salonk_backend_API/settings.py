@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'channels',
     'store',
     'notifications',
+    'hair_tryon',
 ]
 
 # =========================
@@ -146,3 +147,8 @@ EMAIL_HOST_PASSWORD = 'crht qzhr igio gtka'
 #EMAIL_USE_TLS = True
 #EMAIL_HOST_USER = 'a7l2ly@gmail.com'
 #EMAIL_HOST_PASSWORD = 'zesk uhaz ghnd acva'
+
+
+
+
+REPLICATE_API_TOKEN = 'r8_08GeIbXqQiUncXZG2GmNYWinD584v0c3cSuE5'
